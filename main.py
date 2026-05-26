@@ -2,11 +2,12 @@
 AstrBot 长期记忆插件 (Long-Term Memory)
 
 核心功能：
-- save_long_memory FunctionTool：LLM 可主动调用保存重要记忆
+- save_long_memory / delete_long_memory FunctionTool：LLM 可主动保存或清理记忆
 - on_llm_request hook：每次 LLM 请求前自动检索相关记忆，向量相似度匹配
 - 记忆按 user_id + group_id 隔离，支持跨群全局模式
 - SQLite 持久化存储，支持过期时间（一周/一月/一年/永久）
 - 可接入任意 OpenAI 兼容 embedding API
+- mem_no 为用户可见编号，删除后下次插入自动填补空缺
 """
 
 from __future__ import annotations
@@ -57,10 +58,10 @@ class SaveMemoryTool(FunctionTool[AstrAgentContext]):
 
     name: str = "save_long_memory"
     description: str = (
-        "将重要信息保存到用户的长期记忆中。"
-        "当用户主动分享了值得记住的个人信息、偏好、习惯或事实时调用此工具，"
-        "例如「用户喜欢喝绿茶」「用户的猫叫豆豆」「用户正在学 Python」。"
-        "记忆按群隔离保存，后续对话会自动检索相关记忆附加到上下文。"
+        "将对话中值得记住的信息悄悄保存到长期记忆。"
+        "无需等待用户主动要求——只要对话中自然流露出可记录的细节（姓名、爱好、习惯、"
+        "重要事件、偏好、目标、近况等），就像一个细心的朋友一样主动记下来。"
+        "保存后无需告诉用户，记忆会在后续对话中自动提示，帮助你更了解这位用户。"
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -69,8 +70,8 @@ class SaveMemoryTool(FunctionTool[AstrAgentContext]):
                 "content": {
                     "type": "string",
                     "description": (
-                        "要保存的记忆，应为清晰的第三人称事实陈述，"
-                        "例如：「用户喜欢喝绿茶」「用户的猫叫豆豆」"
+                        "要保存的记忆，用简洁的第三人称事实陈述，"
+                        "例如：「用户喜欢喝绿茶」「用户的猫叫豆豆」「用户最近在学 Rust」"
                     ),
                 },
                 "expires_in": {
@@ -125,7 +126,7 @@ class SaveMemoryTool(FunctionTool[AstrAgentContext]):
             return "❌ 无法计算向量表示，请检查 Embedding API 配置后重试"
 
         try:
-            mid = plugin.db.add_memory(  # type: ignore[attr-defined]
+            mem_no = plugin.db.add_memory(  # type: ignore[attr-defined]
                 user_id=user_id,
                 group_id=group_id,
                 content=content,
@@ -134,10 +135,62 @@ class SaveMemoryTool(FunctionTool[AstrAgentContext]):
                 expires_at=expires_at,
             )
             label = _EXPIRY_LABELS[expires_in]
-            return f"✅ 已保存记忆 #{mid}（有效期：{label}）：{content}"
+            return f"✅ 已记住 #{mem_no}（{label}）：{content}"
         except Exception as e:
             logger.error(f"[LongMemory] 保存记忆失败: {e}")
             return f"❌ 保存失败：{e}"
+
+
+@pydantic_dataclass
+class DeleteMemoryTool(FunctionTool[AstrAgentContext]):
+    """LLM-callable tool for removing an outdated or incorrect memory entry."""
+
+    name: str = "delete_long_memory"
+    description: str = (
+        "从长期记忆中删除一条过时或有误的记忆。"
+        "当用户纠正了之前记录的信息（如「我已经不喝绿茶了」），或某条记忆明显与当前事实冲突时，"
+        "先用此工具删除旧记忆，再用 save_long_memory 保存新的正确信息。"
+        "memory_id 为记忆列表中的编号（如 [#3] 则传入 3）。"
+    )
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "integer",
+                    "description": "要删除的记忆编号，即记忆列表中 [#N] 的 N",
+                },
+            },
+            "required": ["memory_id"],
+        }
+    )
+
+    plugin: object | None = None
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
+    ) -> ToolExecResult:
+        plugin = self.plugin
+        if not plugin:
+            return "❌ 插件未初始化"
+
+        mem_id = kwargs.get("memory_id")
+        if mem_id is None:
+            return "❌ 缺少 memory_id 参数"
+
+        event = None
+        if hasattr(context, "context") and isinstance(context.context, AstrAgentContext):
+            event = context.context.event
+        if not event:
+            return "❌ 无法获取消息上下文"
+
+        user_id = str(event.get_sender_id() or event.unified_msg_origin)
+        group_id = str(event.message_obj.group_id or "")
+
+        ok = plugin.db.delete_memory(int(mem_id), user_id, group_id)  # type: ignore[attr-defined]
+        if ok:
+            return f"✅ 已删除记忆 #{mem_id}"
+        return f"❌ 未找到记忆 #{mem_id}"
 
 
 class LongMemoryPlugin(Star):
@@ -152,6 +205,7 @@ class LongMemoryPlugin(Star):
 
         if self._enable:
             self.context.add_llm_tools(SaveMemoryTool(plugin=self))
+            self.context.add_llm_tools(DeleteMemoryTool(plugin=self))
             status = "已配置" if self._embedder else "未配置 Embedding（仅支持写入）"
             logger.info(f"[LongMemory] 插件已加载，Embedding: {status}")
 
@@ -273,8 +327,8 @@ class LongMemoryPlugin(Star):
             memories = []
 
         hint = (
-            "如果用户在对话中提到了值得记住的个人信息、偏好或事实，"
-            "请调用 save_long_memory 工具保存。"
+            "若对话中出现值得记住的新信息，随手用 save_long_memory 记下；"
+            "若某条旧记忆已过时或有误，先用 delete_long_memory 清除再更新。无需告知用户。"
             if self.inject_tool_hint
             else ""
         )
@@ -286,10 +340,10 @@ class LongMemoryPlugin(Star):
 
         lines = [
             "<long_term_memory>",
-            "以下是关于此用户的相关历史记忆（按相关性排序）：",
+            "你对这位用户有以下印象：",
         ]
-        for mem_id, content, _ in memories:
-            lines.append(f"  - [#{mem_id}] {content}")
+        for mem_no, content, _ in memories:
+            lines.append(f"  - {content} [#{mem_no}]")
         if hint:
             lines.append(hint)
         lines.append("</long_term_memory>")
