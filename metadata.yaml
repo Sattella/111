@@ -1,0 +1,39 @@
+name: astrbot_plugin_long_memory
+display_name: 长期记忆
+desc: 为 Bot 提供基于向量检索的长期记忆能力，LLM 可主动保存重要信息，每次对话自动召回相关记忆注入上下文
+help: |
+  本插件为 AstrBot 提供持久化长期记忆功能。
+
+  核心机制：
+  - 写入：LLM 通过 save_long_memory 工具主动保存记忆（如用户偏好、个人信息等）
+  - 读取：每次调用 LLM 前，自动将当前消息向量化，检索最相关的 K 条记忆注入 System Prompt
+  - 存储：使用 SQLite 持久化，支持按到期时间自动清理
+
+  记忆字段说明：
+  - id：自动生成
+  - user_id + group_id：记忆按群隔离（可配置为用户全局）
+  - content：记忆内容（事实性陈述）
+  - embedding_model / embedding：向量模型名称及其向量值
+  - created_at / updated_at：时间戳
+  - expires_at：过期时间（一周/一月/一年/永久）
+
+  必要配置：
+  - embedding_base_url：OpenAI 兼容的 Embedding API 地址
+  - embedding_api_key：API Key（本地模型可留空）
+  - embedding_model：模型名称（如 text-embedding-3-small）
+
+  支持的 Embedding 服务：
+  - OpenAI：https://api.openai.com，模型 text-embedding-3-small / text-embedding-ada-002
+  - Azure OpenAI：填写 Azure endpoint
+  - Ollama（本地）：http://localhost:11434，模型 nomic-embed-text / mxbai-embed-large
+  - 其他 OpenAI 兼容服务：按格式填写即可
+
+  用户指令：
+  - 查看记忆：列出当前群/私聊的全部有效记忆
+  - 删除记忆 <ID>：删除指定 ID 的记忆
+  - 清空记忆：清除当前会话下的所有记忆
+
+  注意：切换 embedding_model 后，旧记忆因向量维度不兼容将无法被检索（数据仍保留，可手动清理）。
+version: 1.0.0
+author: astrbot_plugin_long_memory
+repo: https://github.com/
