@@ -3,7 +3,7 @@ import re
 import math
 import random
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
@@ -55,6 +55,18 @@ class MessageSplitterPlugin(Star):
         """
         setattr(event, "__is_llm_reply", True)
 
+    @filter.on_llm_tool_respond()
+    async def on_llm_tool_respond(self, event: AstrMessageEvent, tool: Any, tool_args: Any, tool_result: Any):
+        """
+        Mark active sends from the agent tool loop so the final residual result
+        is not split and sent again by this plugin.
+        """
+        tool_name = getattr(tool, "name", "")
+        tool_failed = bool(getattr(tool_result, "isError", False))
+        if tool_name == "send_message_to_user" and not tool_failed:
+            setattr(event, "__splitter_tool_sent_message", True)
+            logger.info("[Splitter] 检测到 send_message_to_user 已主动发送消息，将跳过后续残留结果。")
+
     @filter.on_decorating_result(priority=-100000000000000000)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """
@@ -66,6 +78,11 @@ class MessageSplitterPlugin(Star):
 
         result = event.get_result()
         if not result or not result.chain:
+            return
+
+        if getattr(event, "__splitter_tool_sent_message", False):
+            result.chain.clear()
+            logger.info("[Splitter] send_message_to_user 已完成主动发送，已清空框架残留结果以避免重复发送。")
             return
 
         # 2. 作用范围判定：根据配置决定是仅分段 LLM 回复还是分段所有消息
