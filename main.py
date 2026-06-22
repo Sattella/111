@@ -3,7 +3,7 @@ import re
 import math
 import random
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
@@ -13,9 +13,9 @@ from astrbot.api.message_components import Plain, BaseMessageComponent, Reply, R
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 
 class MessageSplitterPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: Optional[AstrBotConfig] = None):
         super().__init__(context)
-        self.config = config
+        self.config = config or {}
         # 定义成对出现的字符，在智能分段时避免在这些符号内部切断
         self.pair_map = {
             '"': '"', '《': '》', '（': '）', '(': ')', 
