@@ -164,11 +164,11 @@ class MessageSplitterPlugin(Star):
             final_segments.append(merged_last)
             segments = final_segments
 
-        # +++ 关键：在每个分段内部删除换行符、星号、句号和美元符号（先分段，后清理） +++
+        # +++ 关键：在每个分段内部清理换行、连续空白和无用符号（先分段，后清理） +++
         for seg in segments:
             for comp in seg:
                 if isinstance(comp, Plain) and comp.text:
-                    comp.text = comp.text.replace('\n', '').replace('*', '').replace('。', '').replace('$', '').replace('-', '')
+                    comp.text = self._clean_plain_text(comp.text)
 
         # 判定是否需要对 At 组件执行特殊处理逻辑
         at_strategy = strategies.get('at', "跟随下段")
@@ -313,6 +313,12 @@ class MessageSplitterPlugin(Star):
         
         log_content = content_str.replace('\n', '\\n')
         logger.info(f"[Splitter] 第 {index}/{total} 段 ({method}): {log_content}")
+
+    def _clean_plain_text(self, text: str) -> str:
+        """清理文本中的换行、大段空白和会显得不自然的符号。"""
+        text = re.sub(r'[\r\n\u2028\u2029]+', ' ', text)
+        text = re.sub(r'[ \t\f\v]+', ' ', text)
+        return text.replace('*', '').replace('。', '').replace('$', '').replace('-', '').strip()
 
     async def _process_tts_for_segment(self, event: AstrMessageEvent, segment: List[BaseMessageComponent]) -> List[BaseMessageComponent]:
         """为单个消息分段转换 TTS 语音"""
