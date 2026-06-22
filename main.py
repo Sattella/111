@@ -24,15 +24,10 @@ class MessageSplitterPlugin(Star):
         # 定义引用/引号字符
         self.quote_chars = {'"', "'", "`"}
 
-        self.balanced_mode = self.config.get("balanced_split_mode", False)
-        try:
-            self.min_seg_length = max(int(self.config.get("min_segment_length", 10)), 1)
-            self.split_ratio_min = float(self.config.get("balanced_split_ratio_min", 0.4))
-            self.split_ratio_max = float(self.config.get("balanced_split_ratio_max", 0.9))
-        except (ValueError, TypeError):
-            self.min_seg_length = 10
-            self.split_ratio_min = 0.4
-            self.split_ratio_max = 0.9
+        self.balanced_mode = self._get_bool("balanced_split_mode", False)
+        self.min_seg_length = max(self._get_int("min_segment_length", 10), 1)
+        self.split_ratio_min = self._get_float("balanced_split_ratio_min", 0.4)
+        self.split_ratio_max = self._get_float("balanced_split_ratio_max", 0.9)
             
         self.secondary_pattern = re.compile(r'[，,、；;]+')
 
@@ -55,7 +50,7 @@ class MessageSplitterPlugin(Star):
         """
         setattr(event, "__is_llm_reply", True)
 
-    @filter.on_decorating_result(priority=-100000000000000000)
+    @filter.on_decorating_result(priority=100000000000000000)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """
         核心拦截器：在消息渲染阶段拦截并执行分段逻辑。
@@ -68,8 +63,12 @@ class MessageSplitterPlugin(Star):
         if not result or not result.chain:
             return
 
+        debug_enabled = self._get_bool("enable_debug_log", False)
+        if debug_enabled:
+            logger.info("[Splitter] on_decorating_result 已触发，开始处理最终输出。")
+
         # 2. 消息长度校验：如果总长度小于设定阈值，则只跳过分段，不跳过清理
-        max_len_no_split = self.config.get("max_length_no_split", 0)
+        max_len_no_split = self._get_int("max_length_no_split", 0)
         total_text_len = sum(len(c.text) for c in result.chain if isinstance(c, Plain))
         skip_split = max_len_no_split > 0 and total_text_len < max_len_no_split
 
@@ -87,26 +86,26 @@ class MessageSplitterPlugin(Star):
                 comp.text = comp.text.replace('\u200b', '__ZWSP_SINGLE__')
 
         # 4. 获取分段配置
-        split_mode = self.config.get("split_mode", "regex")
+        split_mode = self._get_str("split_mode", "regex")
         if split_mode == "simple":
             # 简单模式：使用固定字符切分
-            split_chars = self.config.get("split_chars", "。？！?!；;\n")
+            split_chars = self._get_str("split_chars", "。？！?!；;\n")
             split_pattern = f"[{re.escape(split_chars)}]+"
         else:
             # 正则模式：使用自定义正则切分
-            split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+            split_pattern = self._get_str("split_regex", r"[。？！?!\n…]+")
 
-        clean_pattern = self.config.get("clean_regex", "") # 用于清理无用字符的正则
-        smart_mode = self.config.get("enable_smart_split", True) # 是否开启括号保护等智能模式
-        max_segs = self.config.get("max_segments", 7) # 最大分段数
-        enable_reply = self.config.get("enable_reply", True) # 是否在第一段保留引用回复
+        clean_pattern = self._get_str("clean_regex", "") # 用于清理无用字符的正则
+        smart_mode = self._get_bool("enable_smart_split", True) # 是否开启括号保护等智能模式
+        max_segs = self._get_int("max_segments", 7) # 最大分段数
+        enable_reply = self._get_bool("enable_reply", True) # 是否在第一段保留引用回复
 
         # 非文本组件（图片、艾特、表情等）的分段策略
         strategies = {
-            'image': self.config.get("image_strategy", "单独"),
-            'at': self.config.get("at_strategy", "跟随下段"),
-            'face': self.config.get("face_strategy", "嵌入"),
-            'default': self.config.get("other_media_strategy", "跟随下段")
+            'image': self._get_str("image_strategy", "单独"),
+            'at': self._get_str("at_strategy", "跟随下段"),
+            'face': self._get_str("face_strategy", "嵌入"),
+            'default': self._get_str("other_media_strategy", "跟随下段")
         }
 
         ideal_length = 0
@@ -188,6 +187,8 @@ class MessageSplitterPlugin(Star):
 
         if len(segments) > 1:
             logger.info(f"[Splitter] 消息被分为 {len(segments)} 段。")
+        elif debug_enabled:
+            logger.info(f"[Splitter] 消息未分段。skip_split={skip_split}, total_text_len={total_text_len}, pattern={split_pattern}")
 
         # 8. 预处理：应用清理正则（如果配置了）
         if clean_pattern:
@@ -320,10 +321,48 @@ class MessageSplitterPlugin(Star):
         text = re.sub(r'[ \t\f\v]+', ' ', text)
         return text.replace('*', '').replace('。', '').replace('$', '').replace('-', '').strip()
 
+    def _get_config_value(self, key: str, default):
+        try:
+            return self.config.get(key, default)
+        except Exception:
+            return default
+
+    def _get_str(self, key: str, default: str) -> str:
+        value = self._get_config_value(key, default)
+        if value is None:
+            return default
+        return str(value)
+
+    def _get_bool(self, key: str, default: bool) -> bool:
+        value = self._get_config_value(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on", "开启", "是"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off", "关闭", "否"}:
+                return False
+        return bool(value) if value is not None else default
+
+    def _get_int(self, key: str, default: int) -> int:
+        value = self._get_config_value(key, default)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _get_float(self, key: str, default: float) -> float:
+        value = self._get_config_value(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     async def _process_tts_for_segment(self, event: AstrMessageEvent, segment: List[BaseMessageComponent]) -> List[BaseMessageComponent]:
         """为单个消息分段转换 TTS 语音"""
         # 检查插件配置是否启用 TTS
-        if not self.config.get("enable_tts_for_segments", True):
+        if not self._get_bool("enable_tts_for_segments", True):
             return segment
         
         try:
@@ -383,17 +422,17 @@ class MessageSplitterPlugin(Star):
         strategy = self.config.get("delay_strategy", "linear")
         if strategy == "random":
             # 随机延迟
-            return random.uniform(self.config.get("random_min", 1.0), self.config.get("random_max", 3.0))
+            return random.uniform(self._get_float("random_min", 1.0), self._get_float("random_max", 3.0))
         elif strategy == "log":
             # 对数延迟：字数越多延迟增加越缓
-            base = self.config.get("log_base", 0.5)
-            factor = self.config.get("log_factor", 0.8)
+            base = self._get_float("log_base", 0.5)
+            factor = self._get_float("log_factor", 0.8)
             return min(base + factor * math.log(len(text) + 1), 5.0)
         elif strategy == "linear":
             # 线性延迟：固定基础延迟 + (字数 * 系数)
-            return self.config.get("linear_base", 0.5) + (len(text) * self.config.get("linear_factor", 0.1))
+            return self._get_float("linear_base", 0.5) + (len(text) * self._get_float("linear_factor", 0.1))
         else:
-            return self.config.get("fixed_delay", 1.5)
+            return self._get_float("fixed_delay", 1.5)
 
     def split_chain_smart(self, chain: List[BaseMessageComponent], pattern: str, smart_mode: bool, strategies: Dict[str, str], enable_reply: bool, ideal_length: int = 0) -> List[List[BaseMessageComponent]]:
         """
