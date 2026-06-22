@@ -1,0 +1,188 @@
+{
+  "split_mode": {
+    "description": "分段识别模式。",
+    "hint": "Regex: 使用正则表达式匹配; Simple: 使用指定字符列表匹配。",
+    "type": "string",
+    "options": ["regex", "simple"],
+    "default": "regex"
+  },
+  "split_chars": {
+    "description": "简单模式下的分段符号(仅Simple生效)",
+    "hint": "可添加多个符号或文本，文字后面带这些内容就会分段（换行是 \\n），如添加：。 或 ！ 或 \\n",
+    "type": "list",
+    "default": ["。", "？", "！", "?", "!", "；", ";", "\n"]
+  },
+  "split_regex": {
+    "description": "正则模式下的分段表达式(仅Regex生效)",
+    "hint": "支持高级正则匹配规则。",
+    "type": "string",
+    "default": "[。？！?!\\n…]+"
+  },
+  "clean_before_items": {
+    "description": "【分段前】清理文本项(仅Simple生效)",
+    "hint": "在切分之前执行，直接删除填入的准确文本。非常适合新手填入 <think> 或 </think> 进行脱敏。",
+    "type": "list",
+    "default": []
+  },
+  "clean_after_items": {
+    "description": "【分段后】清理文本项(仅Simple生效)",
+    "hint": "在分段完成、发送前执行删除。注意不要误删关键标点。",
+    "type": "list",
+    "default": []
+  },
+  "clean_before_regex": {
+    "description": "【分段前】高级清理正则(仅Regex生效)",
+    "hint": "会在切分之前执行！如填写 <think>.*?</think> 将可安全地彻底剥离外置思维链而不受后续切分影响。",
+    "type": "string",
+    "default": ""
+  },
+  "clean_after_regex": {
+    "description": "【分段后】高级清理正则(仅Regex生效)",
+    "hint": "在分段完成、发送前对每个被切割好的段落执行清理。",
+    "type": "string",
+    "default": ""
+  },
+  "enable_group_split": {
+    "description": "是否开启群聊分段",
+    "hint": "当群组分段导致刷屏时，可关闭该开关，默认开启。",
+    "type": "bool",
+    "default": true
+  },
+  "trim_segment_edge_blank_lines": {
+    "description": "是否清理每段首尾空行。",
+    "hint": "开启后，仅移除每个分段开头和结尾的空白行，不影响段内正文换行。",
+    "type": "bool",
+    "default": true
+  },
+  "inject_kaomoji_prompt": {
+    "description": "是否注入颜文字保护提示词。",
+    "hint": "开启后，会在 LLM 请求前追加提示，要求将颜文字用三反引号包裹，减少被错误分段的概率。",
+    "type": "bool",
+    "default": true
+  },
+  "max_segments": {
+    "description": "最大分段数量。",
+    "type": "int",
+    "default": 7
+  },
+  "max_length_no_split": {
+    "description": "分段字数阈值",
+    "hint": "少于多少字不执行分段。填 0 禁用此功能。",
+    "type": "int",
+    "default": 0
+  },
+  "balanced_split_mode": {
+    "description": "智能均分模式",
+    "hint": "开启后，会自动用总字数除以最大分段数，尽量让每段字数均匀分布。",
+    "type": "bool",
+    "default": false
+  },
+  "min_segment_length": {
+    "description": "均分时的最小段落长度",
+    "hint": "防止均分时切出只有几个字的碎片，建议设置 10-20。",
+    "type": "int",
+    "default": 10
+  },
+  "balanced_split_ratio_min": {
+    "description": "均分模式下，低于理想长度的该比例时不切分",
+    "type": "float",
+    "default": 0.4
+  },
+  "balanced_split_ratio_max": {
+    "description": "均分模式下，高于理想长度的该比例时寻找次级标点切分",
+    "type": "float",
+    "default": 0.9
+  },
+  "enable_smart_split": {
+    "description": "是否开启智能识别(忽略引号内标点)。",
+    "type": "bool",
+    "default": true
+  },
+  "enable_reply": {
+    "description": "是否保留回复引用。",
+    "hint": "开启后，将在第一段消息中引用用户的原消息；关闭则不引用。",
+    "type": "bool",
+    "default": true
+  },
+  "split_scope": {
+    "description": "分段内容范围",
+    "hint": "默认只对 LLM 生成内容进行分段，可选择把插件输出也一起切了",
+    "type": "string",
+    "options": ["llm_only", "all"],
+    "default": "llm_only"
+  },
+  "disable_active_split_on_restricted_platforms": {
+    "description": "在受限平台禁用主动分段发送。",
+    "hint": "开启后，在 qq_official、weixin_official_account、dingtalk 上直接跳过本插件的主动分段发送，避免出现部分分段发送失败",
+    "type": "bool",
+    "default": true
+  },
+  "image_strategy": {
+    "description": "图片组件的分段策略。",
+    "hint": "单独: 单独一条消息; 跟随下段: 跟随下一段文字; 跟随上段: 跟随上一段文字; 嵌入: 视为普通字符嵌入。",
+    "type": "string",
+    "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
+    "default": "单独"
+  },
+  "at_strategy": {
+    "description": "At(@)组件的分段策略。",
+    "hint": "注意：通常 LLM 不会生成 At 组件，此选项仅对其他插件生成的 At 生效。",
+    "type": "string",
+    "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
+    "default": "跟随下段"
+  },
+  "face_strategy": {
+    "description": "表情(Face)组件的分段策略。",
+    "type": "string",
+    "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
+    "default": "嵌入"
+  },
+  "other_media_strategy": {
+    "description": "其他未知组件的分段策略。",
+    "type": "string",
+    "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
+    "default": "跟随下段"
+  },
+  "delay_strategy": {
+    "description": "分段发送的延迟策略。",
+    "hint": "Linear: 线性延迟(字数*系数); Log: 对数延迟; Random: 随机; Fixed: 固定。",
+    "type": "string",
+    "options": ["linear", "log", "random", "fixed"],
+    "default": "linear"
+  },
+  "linear_base": {
+    "description": "线性延迟的基础时间(秒)。",
+    "type": "float",
+    "default": 0.5
+  },
+  "linear_factor": {
+    "description": "线性延迟的单字系数(秒/字)。",
+    "type": "float",
+    "default": 0.1
+  },
+  "log_base": {
+    "description": "对数延迟的基础时间(秒)。",
+    "type": "float",
+    "default": 0.5
+  },
+  "log_factor": {
+    "description": "对数延迟的系数。",
+    "type": "float",
+    "default": 0.8
+  },
+  "random_min": {
+    "description": "随机延迟最小值(秒)。",
+    "type": "float",
+    "default": 1.0
+  },
+  "random_max": {
+    "description": "随机延迟最大值(秒)。",
+    "type": "float",
+    "default": 3.0
+  },
+  "fixed_delay": {
+    "description": "固定延迟时间(秒)。",
+    "type": "float",
+    "default": 1.5
+  }
+}
