@@ -9,6 +9,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.provider import LLMResponse, ProviderRequest
+import astrbot.api.message_components as Comp
 from astrbot.api.message_components import Plain, BaseMessageComponent, Reply, Record
 from astrbot.core.star.session_llm_manager import SessionServiceManager
 
@@ -54,6 +55,46 @@ class MessageSplitterPlugin(Star):
         标记该事件为 LLM 生成的回复，用于分段作用范围的判定。
         """
         setattr(event, "__is_llm_reply", True)
+
+    @filter.on_using_llm_tool()
+    async def on_using_llm_tool(self, event: AstrMessageEvent, tool: Any, tool_args: dict | None):
+        """
+        Split text sent through send_message_to_user before the tool sends it.
+        The earlier segments are sent here, and the last segment is written back
+        into tool_args so the original tool still completes normally.
+        """
+        tool_name = getattr(tool, "name", "")
+        if tool_name != "send_message_to_user" or not isinstance(tool_args, dict):
+            return
+
+        messages = tool_args.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return
+
+        chain = self._tool_messages_to_chain(messages)
+        if not chain:
+            return
+
+        segments = self._split_and_clean_chain(chain)
+        if len(segments) <= 1:
+            return
+
+        logger.info(f"[Splitter] send_message_to_user 工具消息被分为 {len(segments)} 段。")
+
+        for i, segment_chain in enumerate(segments[:-1]):
+            text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
+            has_media = any(not isinstance(c, Plain) for c in segment_chain)
+            if not text_content.strip() and not has_media:
+                continue
+
+            self._log_segment(i + 1, len(segments), segment_chain, "工具主动发送")
+            mc = MessageChain()
+            mc.chain = segment_chain
+            await self.context.send_message(event.unified_msg_origin, mc)
+            await asyncio.sleep(self.calculate_delay(text_content))
+
+        tool_args["messages"] = self._chain_to_tool_messages(segments[-1])
+        setattr(event, "__splitter_tool_sent_message", True)
 
     @filter.on_llm_tool_respond()
     async def on_llm_tool_respond(self, event: AstrMessageEvent, tool: Any, tool_args: Any, tool_result: Any):
@@ -325,6 +366,82 @@ class MessageSplitterPlugin(Star):
                 self._log_segment(len(segments), len(segments), last_segment, "交给框架")
                 result.chain.clear()
                 result.chain.extend(last_segment)
+
+    def _split_and_clean_chain(self, chain: List[BaseMessageComponent]) -> List[List[BaseMessageComponent]]:
+        """Apply the same split and basic cleanup rules to an arbitrary chain."""
+        split_mode = self.config.get("split_mode", "regex")
+        if split_mode == "simple":
+            split_chars = self.config.get("split_chars", "。？！?!；;\n")
+            split_pattern = f"[{re.escape(split_chars)}]+"
+        else:
+            split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+
+        smart_mode = self.config.get("enable_smart_split", True)
+        max_segs = self.config.get("max_segments", 7)
+        strategies = {
+            'image': self.config.get("image_strategy", "单独"),
+            'at': self.config.get("at_strategy", "跟随下段"),
+            'face': self.config.get("face_strategy", "嵌入"),
+            'default': self.config.get("other_media_strategy", "跟随下段")
+        }
+
+        segments = self.split_chain_smart(chain, split_pattern, smart_mode, strategies, False, 0)
+        if len(segments) > max_segs and max_segs > 0:
+            merged_last = []
+            final_segments = segments[:max_segs-1]
+            for seg in segments[max_segs-1:]:
+                merged_last.extend(seg)
+            final_segments.append(merged_last)
+            segments = final_segments
+
+        clean_pattern = self.config.get("clean_regex", "")
+        for seg in segments:
+            for comp in seg:
+                if isinstance(comp, Plain) and comp.text:
+                    comp.text = comp.text.replace('\n', '').replace('*', '').replace('。', '').replace('-', '')
+                    if clean_pattern:
+                        comp.text = re.sub(clean_pattern, "", comp.text)
+
+        return segments
+
+    def _tool_messages_to_chain(self, messages: list) -> List[BaseMessageComponent]:
+        """Convert send_message_to_user message dicts into AstrBot components."""
+        chain: List[BaseMessageComponent] = []
+        at_cls = getattr(Comp, "At", None)
+        for item in messages:
+            if not isinstance(item, dict):
+                return []
+
+            item_type = item.get("type")
+            if item_type == "plain":
+                chain.append(Plain(str(item.get("text", ""))))
+            elif item_type == "mention_user":
+                mention_user_id = item.get("mention_user_id")
+                if at_cls is None or mention_user_id is None:
+                    return []
+                try:
+                    chain.append(at_cls(qq=str(mention_user_id)))
+                except TypeError:
+                    chain.append(at_cls(user_id=str(mention_user_id)))
+            else:
+                return []
+
+        return chain
+
+    def _chain_to_tool_messages(self, chain: List[BaseMessageComponent]) -> list:
+        """Convert supported AstrBot components back to send_message_to_user dicts."""
+        messages = []
+        for comp in chain:
+            if isinstance(comp, Plain):
+                messages.append({"type": "plain", "text": comp.text})
+                continue
+
+            if type(comp).__name__.lower() == "at":
+                mention_user_id = getattr(comp, "qq", None) or getattr(comp, "user_id", None)
+                if mention_user_id is not None:
+                    messages.append({"type": "mention_user", "mention_user_id": str(mention_user_id)})
+
+        return messages
 
     def _log_segment(self, index: int, total: int, chain: List[BaseMessageComponent], method: str):
         """记录分段内容的辅助日志方法"""
