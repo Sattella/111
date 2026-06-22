@@ -68,23 +68,10 @@ class MessageSplitterPlugin(Star):
         if not result or not result.chain:
             return
 
-        # 2. 作用范围判定：根据配置决定是仅分段 LLM 回复还是分段所有消息
-        split_scope = self.config.get("split_scope", "llm_only")
-        try:
-            is_result_llm_reply = result.is_llm_result()
-        except Exception:
-            is_result_llm_reply = False
-        is_llm_reply = getattr(event, "__is_llm_reply", False) or is_result_llm_reply
-
-        if split_scope == "llm_only" and not is_llm_reply:
-            return
-
-        # 3. 消息长度校验：如果总长度小于设定阈值，则不执行分段
+        # 2. 消息长度校验：如果总长度小于设定阈值，则只跳过分段，不跳过清理
         max_len_no_split = self.config.get("max_length_no_split", 0)
         total_text_len = sum(len(c.text) for c in result.chain if isinstance(c, Plain))
-
-        if max_len_no_split > 0 and total_text_len < max_len_no_split:
-            return
+        skip_split = max_len_no_split > 0 and total_text_len < max_len_no_split
 
         # 标记为已由分段器处理
         setattr(event, "__splitter_processed", True)
@@ -147,14 +134,17 @@ class MessageSplitterPlugin(Star):
                     ideal_length = 0
 
         # 5. 执行切分：将原始消息链分解为多个子链（segments）
-        segments = self.split_chain_smart(
-            result.chain, 
-            split_pattern, 
-            smart_mode, 
-            strategies, 
-            enable_reply,
-            ideal_length
-        )
+        if skip_split:
+            segments = [result.chain[:]]
+        else:
+            segments = self.split_chain_smart(
+                result.chain, 
+                split_pattern, 
+                smart_mode, 
+                strategies, 
+                enable_reply,
+                ideal_length
+            )
 
         if self.balanced_mode and len(segments) >= 2:
             last_seg_text = "".join([c.text for c in segments[-1] if isinstance(c, Plain)]).replace(" ", "")
