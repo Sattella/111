@@ -60,8 +60,8 @@ class MessageSplitterPlugin(Star):
     async def on_using_llm_tool(self, event: AstrMessageEvent, tool: Any, tool_args: dict | None):
         """
         Split text sent through send_message_to_user before the tool sends it.
-        The earlier segments are sent here, and the last segment is written back
-        into tool_args so the original tool still completes normally.
+        When the message needs multiple segments, this plugin sends all segments
+        and stops the original tool call to avoid a duplicate second send.
         """
         tool_name = getattr(tool, "name", "")
         if tool_name != "send_message_to_user" or not isinstance(tool_args, dict):
@@ -79,9 +79,9 @@ class MessageSplitterPlugin(Star):
         if len(segments) <= 1:
             return
 
-        logger.info(f"[Splitter] send_message_to_user 工具消息被分为 {len(segments)} 段。")
+        logger.info(f"[Splitter] send_message_to_user 工具消息被分为 {len(segments)} 段，将由分段器接管发送。")
 
-        for i, segment_chain in enumerate(segments[:-1]):
+        for i, segment_chain in enumerate(segments):
             text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
             has_media = any(not isinstance(c, Plain) for c in segment_chain)
             if not text_content.strip() and not has_media:
@@ -91,10 +91,13 @@ class MessageSplitterPlugin(Star):
             mc = MessageChain()
             mc.chain = segment_chain
             await self.context.send_message(event.unified_msg_origin, mc)
-            await asyncio.sleep(self.calculate_delay(text_content))
+            if i < len(segments) - 1:
+                await asyncio.sleep(self.calculate_delay(text_content))
 
-        tool_args["messages"] = self._chain_to_tool_messages(segments[-1])
         setattr(event, "__splitter_tool_sent_message", True)
+        stop_event = getattr(event, "stop_event", None)
+        if callable(stop_event):
+            stop_event()
 
     @filter.on_llm_tool_respond()
     async def on_llm_tool_respond(self, event: AstrMessageEvent, tool: Any, tool_args: Any, tool_result: Any):
@@ -427,21 +430,6 @@ class MessageSplitterPlugin(Star):
                 return []
 
         return chain
-
-    def _chain_to_tool_messages(self, chain: List[BaseMessageComponent]) -> list:
-        """Convert supported AstrBot components back to send_message_to_user dicts."""
-        messages = []
-        for comp in chain:
-            if isinstance(comp, Plain):
-                messages.append({"type": "plain", "text": comp.text})
-                continue
-
-            if type(comp).__name__.lower() == "at":
-                mention_user_id = getattr(comp, "qq", None) or getattr(comp, "user_id", None)
-                if mention_user_id is not None:
-                    messages.append({"type": "mention_user", "mention_user_id": str(mention_user_id)})
-
-        return messages
 
     def _log_segment(self, index: int, total: int, chain: List[BaseMessageComponent], method: str):
         """记录分段内容的辅助日志方法"""
