@@ -1,10 +1,4 @@
 {
-  "split_scope": {
-    "description": "分段作用范围：llm_only 仅处理 LLM 回复，all 处理所有进入渲染链的消息。",
-    "type": "string",
-    "hint": "llm_only/all",
-    "default": "llm_only"
-  },
   "split_mode": {
     "description": "分段模式：regex 使用正则，simple 使用固定字符。",
     "type": "string",
