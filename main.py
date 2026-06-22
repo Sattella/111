@@ -94,6 +94,9 @@ class MessageSplitterPlugin(Star):
             if i < len(segments) - 1:
                 await asyncio.sleep(self.calculate_delay(text_content))
 
+        # Prevent the original send_message_to_user tool from sending the
+        # unsplit content after this hook returns.
+        tool_args["messages"] = []
         setattr(event, "__splitter_tool_sent_message", True)
         stop_event = getattr(event, "stop_event", None)
         if callable(stop_event):
