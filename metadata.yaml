@@ -1,0 +1,7 @@
+name: astrbot_plugin_message_splitter
+display_name: 消息分段清理插件
+desc: 对 AstrBot 回复内容进行智能分段，并清理换行、星号、句号、美元符号、短横线等不自然符号。
+version: v1.0.0
+author: satella
+repo: ""
+astrbot_version: ">=4.16,<5"
