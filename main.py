@@ -134,7 +134,7 @@ class MessageSplitterPlugin(Star):
 
         # 2. 作用范围判定：根据配置决定是仅分段 LLM 回复还是分段所有消息
         split_scope = self.config.get("split_scope", "llm_only")
-        is_llm_reply = getattr(event, "__is_llm_reply", False)
+        is_llm_reply = getattr(event, "__is_llm_reply", False) or self._is_llm_result(result)
 
         if split_scope == "llm_only" and not is_llm_reply:
             return
@@ -409,6 +409,22 @@ class MessageSplitterPlugin(Star):
                         comp.text = re.sub(clean_pattern, "", comp.text)
 
         return segments
+
+    def _is_llm_result(self, result: Any) -> bool:
+        """
+        Detect framework-generated LLM results even when on_llm_response has not
+        fired yet, which happens for assistant text emitted before a tool call.
+        """
+        for method_name in ("is_llm_result", "is_model_result"):
+            checker = getattr(result, method_name, None)
+            if not callable(checker):
+                continue
+            try:
+                if checker():
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _tool_messages_to_chain(self, messages: list) -> List[BaseMessageComponent]:
         """Convert send_message_to_user message dicts into AstrBot components."""
