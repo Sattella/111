@@ -119,12 +119,14 @@ class MessageSplitterPlugin(Star):
         """
         核心拦截器：在消息渲染阶段拦截并执行分段逻辑。
         """
-        # 1. 防止重复处理：如果已经处理过则跳过
-        if getattr(event, "__splitter_processed", False):
-            return
-
         result = event.get_result()
         if not result or not result.chain:
+            return
+
+        # 1. 防止同一个结果重复处理，但允许同一轮工具调用前后多次 LLM 输出分别分段。
+        chain_id = id(result.chain)
+        processed_chain_ids = getattr(event, "__splitter_processed_chain_ids", set())
+        if chain_id in processed_chain_ids:
             return
 
         if getattr(event, "__splitter_tool_sent_message", False):
@@ -146,8 +148,9 @@ class MessageSplitterPlugin(Star):
         if max_len_no_split > 0 and total_text_len < max_len_no_split:
             return
 
-        # 标记为已由分段器处理
-        setattr(event, "__splitter_processed", True)
+        # 标记当前结果链为已由分段器处理
+        processed_chain_ids.add(chain_id)
+        setattr(event, "__splitter_processed_chain_ids", processed_chain_ids)
 
         # === 兼容性处理：脱敏其他插件(如AtTool)注入的零宽字符及附带空格 ===
         # 将其替换为无空格的占位符，避免被带 \s 的分段正则无情切碎导致换行断层
