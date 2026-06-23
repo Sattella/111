@@ -78,7 +78,8 @@ class MessageSplitterPlugin(Star):
             return
 
         segments = self._split_and_clean_chain(chain)
-        if len(segments) <= 1:
+        should_take_over = len(segments) > 1 or self._chain_has_at(chain)
+        if not should_take_over:
             return
 
         logger.info(f"[Splitter] send_message_to_user 工具消息被分为 {len(segments)} 段，将由分段器接管发送。")
@@ -272,55 +273,7 @@ class MessageSplitterPlugin(Star):
                     if isinstance(comp, Plain) and comp.text:
                         comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
 
-        # 9. 预处理：At 组件前后的空格清理 (智能判断单一单词与长句)
-        # 如果已被 AtTool 插件处理过，分段器主动让步，跳过二次清理避免冲突
-        if not has_external_at_processing:
-            for seg in segments:
-                idx = 0
-                while idx < len(seg):
-                    if type(seg[idx]).__name__.lower() == 'at':
-                        # 处理前置空格
-                        if at_strategy in ["嵌入", "跟随上段"]:
-                            for prev_idx in range(idx - 1, -1, -1):
-                                if isinstance(seg[prev_idx], Plain):
-                                    text = seg[prev_idx].text
-                                    if not re.search(r'[a-zA-Z0-9\']+\s+[a-zA-Z0-9\']+\s+$', text):
-                                        seg[prev_idx].text = text.rstrip(" \t")
-                                    break
-                                elif type(seg[prev_idx]).__name__.lower() not in ['at', 'reply']:
-                                    break
-                        # 处理后置空格
-                        if at_strategy in ["嵌入", "跟随下段", "接下文"]:
-                            for next_idx in range(idx + 1, len(seg)):
-                                if isinstance(seg[next_idx], Plain):
-                                    text = seg[next_idx].text
-                                    if not re.search(r'^\s+[a-zA-Z0-9\']+\s+[a-zA-Z0-9\']+', text):
-                                        seg[next_idx].text = text.lstrip(" \t")
-                                    break
-                                elif type(seg[next_idx]).__name__.lower() not in ['at']:
-                                    break
-                    idx += 1
-
-        # 10. 预处理：注入零宽字符 \u200b，防止 At 后面的文本被误解析
-        # 同理，如果已有其他插件注入，则此步主动让步
-        if at_needs_processing and not has_external_at_processing:
-            for seg in segments:
-                idx = 0
-                while idx < len(seg):
-                    if type(seg[idx]).__name__.lower() == 'at':
-                        found_plain = False
-                        for next_idx in range(idx + 1, len(seg)):
-                            if isinstance(seg[next_idx], Plain):
-                                text = seg[next_idx].text
-                                if re.search(r'\u200b\s\u200b', text):
-                                    pass
-                                else:
-                                    seg[next_idx].text = "\u200b \u200b" + text
-                                found_plain = True
-                                break
-                        if not found_plain:
-                            seg.insert(idx + 1, Plain("\u200b \u200b"))
-                    idx += 1
+        self._process_at_components(segments, at_strategy, at_needs_processing, has_external_at_processing)
 
         # === 兼容性处理：完美还原脱敏的占位符 ===
         for seg in segments:
@@ -411,7 +364,67 @@ class MessageSplitterPlugin(Star):
                 if isinstance(comp, Plain) and comp.text:
                     comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
 
+        at_strategy = strategies.get('at', "跟随下段")
+        at_needs_processing = at_strategy in ["接下文", "跟随下段", "嵌入"] and any(
+            self._chain_has_at(seg) for seg in segments
+        )
+        self._process_at_components(segments, at_strategy, at_needs_processing)
+
         return segments
+
+    def _process_at_components(
+        self,
+        segments: List[List[BaseMessageComponent]],
+        at_strategy: str,
+        at_needs_processing: bool,
+        has_external_at_processing: bool = False
+    ):
+        """Apply spacing and zero-width protection around At components."""
+        if not has_external_at_processing:
+            for seg in segments:
+                idx = 0
+                while idx < len(seg):
+                    if type(seg[idx]).__name__.lower() == 'at':
+                        if at_strategy in ["嵌入", "跟随上段"]:
+                            for prev_idx in range(idx - 1, -1, -1):
+                                if isinstance(seg[prev_idx], Plain):
+                                    text = seg[prev_idx].text
+                                    if not re.search(r'[a-zA-Z0-9\']+\s+[a-zA-Z0-9\']+\s+$', text):
+                                        seg[prev_idx].text = text.rstrip(" \t")
+                                    break
+                                elif type(seg[prev_idx]).__name__.lower() not in ['at', 'reply']:
+                                    break
+
+                        if at_strategy in ["嵌入", "跟随下段", "接下文"]:
+                            for next_idx in range(idx + 1, len(seg)):
+                                if isinstance(seg[next_idx], Plain):
+                                    text = seg[next_idx].text
+                                    if not re.search(r'^\s+[a-zA-Z0-9\']+\s+[a-zA-Z0-9\']+', text):
+                                        seg[next_idx].text = text.lstrip(" \t")
+                                    break
+                                elif type(seg[next_idx]).__name__.lower() not in ['at']:
+                                    break
+                    idx += 1
+
+        if at_needs_processing and not has_external_at_processing:
+            for seg in segments:
+                idx = 0
+                while idx < len(seg):
+                    if type(seg[idx]).__name__.lower() == 'at':
+                        found_plain = False
+                        for next_idx in range(idx + 1, len(seg)):
+                            if isinstance(seg[next_idx], Plain):
+                                text = seg[next_idx].text
+                                if not re.search(r'\u200b\s\u200b', text):
+                                    seg[next_idx].text = "\u200b \u200b" + text
+                                found_plain = True
+                                break
+                        if not found_plain:
+                            seg.insert(idx + 1, Plain("\u200b \u200b"))
+                    idx += 1
+
+    def _chain_has_at(self, chain: List[BaseMessageComponent]) -> bool:
+        return any(type(c).__name__.lower() == 'at' for c in chain)
 
     def _clean_text_preserving_pairs(self, text: str, clean_pattern: str = "") -> str:
         """Clean only text outside protected paired symbols."""
