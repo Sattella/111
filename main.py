@@ -20,7 +20,9 @@ class MessageSplitterPlugin(Star):
         # 定义成对出现的字符，在智能分段时避免在这些符号内部切断
         self.pair_map = {
             '"': '"', '《': '》', '（': '）', '(': ')', 
-            '[': ']', '{': '}', "'": "'", '【': '】', '<': '>'
+            '[': ']', '{': '}', "'": "'", '【': '】', '<': '>',
+            '“': '”', '‘': '’', '「': '」', '『': '』',
+            '〔': '〕', '［': '］', '｛': '｝'
         }
         # 定义引用/引号字符
         self.quote_chars = {'"', "'", "`"}
@@ -242,7 +244,7 @@ class MessageSplitterPlugin(Star):
         for seg in segments:
             for comp in seg:
                 if isinstance(comp, Plain) and comp.text:
-                    comp.text = comp.text.replace('\n', '').replace('*', '').replace('。', '').replace('-', '')
+                    comp.text = self._clean_text_preserving_pairs(comp.text)
 
         # 判定是否需要对 At 组件执行特殊处理逻辑
         at_strategy = strategies.get('at', "跟随下段")
@@ -268,7 +270,7 @@ class MessageSplitterPlugin(Star):
             for seg in segments:
                 for comp in seg:
                     if isinstance(comp, Plain) and comp.text:
-                        comp.text = re.sub(clean_pattern, "", comp.text)
+                        comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
 
         # 9. 预处理：At 组件前后的空格清理 (智能判断单一单词与长句)
         # 如果已被 AtTool 插件处理过，分段器主动让步，跳过二次清理避免冲突
@@ -407,11 +409,53 @@ class MessageSplitterPlugin(Star):
         for seg in segments:
             for comp in seg:
                 if isinstance(comp, Plain) and comp.text:
-                    comp.text = comp.text.replace('\n', '').replace('*', '').replace('。', '').replace('-', '')
-                    if clean_pattern:
-                        comp.text = re.sub(clean_pattern, "", comp.text)
+                    comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
 
         return segments
+
+    def _clean_text_preserving_pairs(self, text: str, clean_pattern: str = "") -> str:
+        """Clean only text outside protected paired symbols."""
+        result = []
+        outside_buffer = []
+        stack = []
+
+        def flush_outside():
+            if not outside_buffer:
+                return
+            outside_text = "".join(outside_buffer)
+            outside_text = outside_text.replace('\n', '').replace('*', '').replace('。', '').replace('-', '')
+            if clean_pattern:
+                outside_text = re.sub(clean_pattern, "", outside_text)
+            result.append(outside_text)
+            outside_buffer.clear()
+
+        for char in text:
+            if stack:
+                result.append(char)
+                if char in self.quote_chars and stack[-1] == char:
+                    stack.pop()
+                    continue
+
+                expected_closer = self.pair_map.get(stack[-1])
+                if char == expected_closer:
+                    stack.pop()
+                elif char in self.pair_map and char not in self.quote_chars:
+                    stack.append(char)
+                continue
+
+            if char in self.quote_chars:
+                flush_outside()
+                stack.append(char)
+                result.append(char)
+            elif char in self.pair_map:
+                flush_outside()
+                stack.append(char)
+                result.append(char)
+            else:
+                outside_buffer.append(char)
+
+        flush_outside()
+        return "".join(result)
 
     def _is_llm_result(self, result: Any) -> bool:
         """
@@ -677,12 +721,8 @@ class MessageSplitterPlugin(Star):
                 elif is_opener and char not in self.quote_chars: 
                     stack.append(char) # 嵌套开启
                 
-                # 符号内部的换行符替换为空格，保持块的完整性
-                if char == '\n': 
-                    current_chunk += ' '
-                else: 
-                    current_chunk += char
-                    if not char.isspace(): current_weight += 1
+                current_chunk += char
+                if not char.isspace(): current_weight += 1
                 i += 1
                 continue
                 
