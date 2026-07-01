@@ -3,6 +3,7 @@ import re
 import math
 import random
 import asyncio
+import unicodedata
 from typing import List, Dict, Any
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
@@ -173,7 +174,7 @@ class MessageSplitterPlugin(Star):
             split_pattern = f"[{re.escape(split_chars)}]+"
         else:
             # 正则模式：使用自定义正则切分
-            split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+            split_pattern = self.config.get("split_regex", r"[。？！?!\n…]+")
 
         clean_pattern = self.config.get("clean_regex", "") # 用于清理无用字符的正则
         smart_mode = self.config.get("enable_smart_split", True) # 是否开启括号保护等智能模式
@@ -273,6 +274,8 @@ class MessageSplitterPlugin(Star):
                     if isinstance(comp, Plain) and comp.text:
                         comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
 
+        segments = self._merge_tiny_text_segments(segments)
+
         self._process_at_components(segments, at_strategy, at_needs_processing, has_external_at_processing)
 
         # === 兼容性处理：完美还原脱敏的占位符 ===
@@ -338,7 +341,7 @@ class MessageSplitterPlugin(Star):
             split_chars = self.config.get("split_chars", "。？！?!；;\n")
             split_pattern = f"[{re.escape(split_chars)}]+"
         else:
-            split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+            split_pattern = self.config.get("split_regex", r"[。？！?!\n…]+")
 
         smart_mode = self.config.get("enable_smart_split", True)
         max_segs = self.config.get("max_segments", 7)
@@ -363,6 +366,8 @@ class MessageSplitterPlugin(Star):
             for comp in seg:
                 if isinstance(comp, Plain) and comp.text:
                     comp.text = self._clean_text_preserving_pairs(comp.text, clean_pattern)
+
+        segments = self._merge_tiny_text_segments(segments)
 
         at_strategy = strategies.get('at', "跟随下段")
         at_needs_processing = at_strategy in ["接下文", "跟随下段", "嵌入"] and any(
@@ -449,8 +454,7 @@ class MessageSplitterPlugin(Star):
                     stack.pop()
                     continue
 
-                expected_closer = self.pair_map.get(stack[-1])
-                if char == expected_closer:
+                if self._is_pair_closer(stack[-1], char):
                     stack.pop()
                 elif char in self.pair_map and char not in self.quote_chars:
                     stack.append(char)
@@ -469,6 +473,77 @@ class MessageSplitterPlugin(Star):
 
         flush_outside()
         return "".join(result)
+
+    def _merge_tiny_text_segments(
+        self,
+        segments: List[List[BaseMessageComponent]],
+        max_meaningful_chars: int = 3
+    ) -> List[List[BaseMessageComponent]]:
+        """Merge text-only segments whose cleaned meaningful text is too short."""
+        if len(segments) <= 1:
+            return segments
+
+        merged: List[List[BaseMessageComponent]] = []
+        pending_prefix: List[BaseMessageComponent] = []
+
+        for index, segment in enumerate(segments):
+            current_segment = pending_prefix + segment
+            pending_prefix = []
+
+            if self._is_tiny_text_segment(current_segment, max_meaningful_chars):
+                if index < len(segments) - 1:
+                    pending_prefix = current_segment
+                    continue
+                if merged:
+                    merged[-1].extend(current_segment)
+                else:
+                    merged.append(current_segment)
+                continue
+
+            merged.append(current_segment)
+
+        if pending_prefix:
+            if merged:
+                merged[-1].extend(pending_prefix)
+            else:
+                merged.append(pending_prefix)
+
+        return [seg for seg in merged if seg]
+
+    def _is_tiny_text_segment(
+        self,
+        segment: List[BaseMessageComponent],
+        max_meaningful_chars: int
+    ) -> bool:
+        if any(not isinstance(comp, (Plain, Reply)) for comp in segment):
+            return False
+
+        text = "".join(comp.text for comp in segment if isinstance(comp, Plain))
+        meaningful_len = self._meaningful_text_length(text)
+        return 0 < meaningful_len <= max_meaningful_chars
+
+    def _meaningful_text_length(self, text: str) -> int:
+        """Count letters and numbers after punctuation/symbol cleanup."""
+        count = 0
+        for char in text:
+            category = unicodedata.category(char)
+            if category and category[0] in {"L", "N"}:
+                count += 1
+        return count
+
+    def _is_pair_closer(self, opener: str, char: str) -> bool:
+        """Return whether char closes opener, including math interval notation."""
+        if char == self.pair_map.get(opener):
+            return True
+
+        # Math intervals often mix brackets, e.g. (0, 3] or [2, 5/2).
+        interval_closers = {
+            "(": {"]", "）", "］"},
+            "[": {")", "）"},
+            "（": {"]", "］"},
+            "［": {")", "）"},
+        }
+        return char in interval_closers.get(opener, set())
 
     def _is_llm_result(self, result: Any) -> bool:
         """
@@ -728,8 +803,7 @@ class MessageSplitterPlugin(Star):
             
             # 3. 若当前处于成对符号/引号内部
             if stack:
-                expected_closer = self.pair_map.get(stack[-1])
-                if char == expected_closer: 
+                if self._is_pair_closer(stack[-1], char): 
                     stack.pop() # 符号匹配闭合
                 elif is_opener and char not in self.quote_chars: 
                     stack.append(char) # 嵌套开启
